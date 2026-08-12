@@ -81,7 +81,7 @@ class GatewayVideo(BaseTool):
     provider = "ai-gateway"
     stability = ToolStability.BETA
     execution_mode = ExecutionMode.SYNC
-    determinism = Determinism.NONDETERMINISTIC
+    determinism = Determinism.STOCHASTIC
     runtime = ToolRuntime.API
 
     dependencies = []
