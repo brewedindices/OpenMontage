@@ -35,8 +35,6 @@ import os
 from pathlib import Path
 from typing import Any
 
-import requests
-
 from tools.base_tool import (
     BaseTool,
     Determinism,
@@ -163,6 +161,8 @@ class GatewayVideo(BaseTool):
             return _FALLBACK_PER_SECOND * seconds
 
     def execute(self, inputs: dict[str, Any]) -> ToolResult:
+        import requests  # lazy: the registry must load without third-party deps
+
         endpoint = _endpoint()
         api_key = os.environ.get("OPENAI_API_KEY")
         if not endpoint or not api_key:
