@@ -132,7 +132,11 @@ class GatewayVideo(BaseTool):
                 "enum": ["16:9", "9:16", "1:1", "4:3", "3:4"],
                 "default": "16:9",
             },
-            "generate_audio": {"type": "boolean", "default": False},
+            "generate_audio": {
+                "type": "boolean",
+                "default": True,
+                "description": "Native model audio (ambience, diegetic sound) generated with the picture. ON by default — a silent clip is a choice the plan must state, never a hidden default.",
+            },
             "seed": {"type": "integer"},
             "output_path": {"type": "string"},
         },
@@ -191,8 +195,7 @@ class GatewayVideo(BaseTool):
             "resolution": inputs.get("resolution", "720p"),
             "aspectRatio": inputs.get("aspect_ratio", "16:9"),
         }
-        if inputs.get("generate_audio"):
-            payload["generateAudio"] = True
+        payload["generateAudio"] = bool(inputs.get("generate_audio", True))
         if inputs.get("seed") is not None:
             payload["seed"] = int(inputs["seed"])
 
