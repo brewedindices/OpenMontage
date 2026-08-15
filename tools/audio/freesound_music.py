@@ -75,7 +75,13 @@ class FreesoundMusic(BaseTool):
         "properties": {
             "query": {
                 "type": "string",
-                "description": "Search query describing desired music mood/genre (e.g., 'dark ambient cinematic underwater')",
+                "description": (
+                    "2-4 broad mood/genre words (e.g., 'dark ambient cinematic'). "
+                    "Freesound's text search requires every term to match, so long "
+                    "descriptive sentences find nothing; the tool broadens an "
+                    "over-specific query automatically (dropping trailing terms, "
+                    "then relaxing duration) and reports effective_query."
+                ),
             },
             "min_duration": {
                 "type": "number",
@@ -128,12 +134,18 @@ class FreesoundMusic(BaseTool):
         start = time.time()
 
         try:
-            # Step 1: Search for matching sounds
-            search_result = self._search(inputs, api_key)
+            # Step 1: Search, broadening an over-specific query if needed
+            search_result, effective_query, relaxed_duration = self._search_with_broadening(
+                inputs, api_key
+            )
             if not search_result:
                 return ToolResult(
                     success=False,
-                    error=f"No music found on Freesound for query: {inputs['query']}",
+                    error=(
+                        f"No music found on Freesound for query: {inputs['query']} "
+                        "(tried broader variants down to the first term and a relaxed "
+                        "duration filter). Try 2-3 different mood/genre words."
+                    ),
                     data={"query": inputs["query"]},
                     duration_seconds=round(time.time() - start, 2),
                 )
@@ -161,6 +173,10 @@ class FreesoundMusic(BaseTool):
                 "avg_rating": sound.get("avg_rating"),
                 "tags": sound.get("tags", []),
                 "query": inputs["query"],
+                # Honesty in-band: what actually matched. Differs from
+                # "query" when the search had to broaden to find anything.
+                "effective_query": effective_query,
+                "duration_filter_relaxed": relaxed_duration,
                 "output": str(output_path),
                 "format": "mp3",
                 "license": "Creative Commons (check individual sound license)",
@@ -172,11 +188,47 @@ class FreesoundMusic(BaseTool):
             duration_seconds=round(time.time() - start, 2),
         )
 
-    def _search(self, inputs: dict[str, Any], api_key: str) -> list[dict]:
+    def _search_with_broadening(
+        self, inputs: dict[str, Any], api_key: str
+    ) -> tuple[list[dict], str, bool]:
+        """Search, progressively broadening until something matches.
+
+        Freesound's text search effectively ANDs every term: measured live,
+        'slow burn cinematic tension ticking percussion' finds 0 sounds
+        while 'cinematic tension percussion' finds plenty. Rich descriptive
+        queries are the natural way a director writes, so the tool absorbs
+        the mismatch: drop trailing terms down to the first, then retry the
+        two broadest variants with a relaxed duration filter. Returns
+        (results, effective_query, duration_filter_relaxed); at most seven
+        requests, far under Freesound's rate limit.
+        """
+        terms = str(inputs["query"]).split()
+        variants: list[str] = []
+        while terms:
+            variants.append(" ".join(terms))
+            terms = terms[:-1]
+
+        for variant in variants[:5]:
+            results = self._search(inputs, api_key, query=variant)
+            if results:
+                return results, variant, False
+        for variant in variants[-2:]:
+            results = self._search(inputs, api_key, query=variant, relax_duration=True)
+            if results:
+                return results, variant, True
+        return [], str(inputs["query"]), False
+
+    def _search(
+        self,
+        inputs: dict[str, Any],
+        api_key: str,
+        query: str | None = None,
+        relax_duration: bool = False,
+    ) -> list[dict]:
         """Search Freesound for sounds matching the query and duration filter."""
-        query = inputs["query"]
-        min_dur = inputs.get("min_duration", 30)
-        max_dur = inputs.get("max_duration", 120)
+        query = query if query is not None else inputs["query"]
+        min_dur = 5 if relax_duration else inputs.get("min_duration", 30)
+        max_dur = 600 if relax_duration else inputs.get("max_duration", 120)
 
         params = urllib.parse.urlencode({
             "query": query,
