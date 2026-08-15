@@ -38,6 +38,10 @@ from tools.base_tool import (
 
 _PER_MILLION_CHARS_USD = 15.0  # openai tts-1 published rate
 
+# HTTP 402 right after a paid call is usually billing-settlement lag,
+# not an empty balance. Wait it out on the principal-approved ladder.
+_BALANCE_BACKOFF_SECONDS = (10, 20, 30, 60)
+
 
 def _endpoint() -> str | None:
     explicit = os.environ.get("AI_GATEWAY_SPEECH_URL")
@@ -144,25 +148,40 @@ class GatewaySpeech(BaseTool):
         if not text:
             return ToolResult(success=False, error="text is required")
 
-        try:
-            response = requests.post(
-                endpoint,
-                headers={
-                    **_auth_headers(),
-                    "ai-gateway-protocol-version": "0.0.1",
-                    "ai-gateway-auth-method": "api-key",
-                    "ai-model-id": str(inputs.get("model", "openai/tts-1")),
-                    "Content-Type": "application/json",
-                },
-                json={
-                    "text": text,
-                    "voice": inputs.get("voice", "onyx"),
-                    "outputFormat": "mp3",
-                },
-                timeout=120,
+        response = None
+        for delay in (0, *_BALANCE_BACKOFF_SECONDS):
+            if delay:
+                time.sleep(delay)
+            try:
+                response = requests.post(
+                    endpoint,
+                    headers={
+                        **_auth_headers(),
+                        "ai-gateway-protocol-version": "0.0.1",
+                        "ai-gateway-auth-method": "api-key",
+                        "ai-model-id": str(inputs.get("model", "openai/tts-1")),
+                        "Content-Type": "application/json",
+                    },
+                    json={
+                        "text": text,
+                        "voice": inputs.get("voice", "onyx"),
+                        "outputFormat": "mp3",
+                    },
+                    timeout=120,
+                )
+            except requests.RequestException as exc:
+                return ToolResult(success=False, error=f"Gateway speech request failed: {exc}")
+            if response.status_code != 402:
+                break
+        if response.status_code == 402:
+            return ToolResult(
+                success=False,
+                error=(
+                    "Gateway speech still returns HTTP 402 after four settlement waits "
+                    "(10/20/30/60s) — the balance is genuinely insufficient; funding is the "
+                    f"principal's call. Gateway said: {response.text[:300]}"
+                ),
             )
-        except requests.RequestException as exc:
-            return ToolResult(success=False, error=f"Gateway speech request failed: {exc}")
         if response.status_code != 200:
             return ToolResult(success=False, error=f"Gateway speech HTTP {response.status_code}: {response.text[:300]}")
 

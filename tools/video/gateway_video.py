@@ -32,6 +32,7 @@ from __future__ import annotations
 import base64
 import json
 import os
+import time
 from pathlib import Path
 from typing import Any
 
@@ -49,6 +50,12 @@ from tools.base_tool import (
 )
 
 _FALLBACK_PER_SECOND = 0.05  # conservative placeholder when pricing env lacks the model
+
+# HTTP 402 right after a previous paid call is usually billing-settlement
+# lag, not an empty balance (measured live: the identical call passed
+# seconds later). Wait out the ledger on this principal-approved ladder;
+# only a 402 that survives all four waits is a real funding stop.
+_BALANCE_BACKOFF_SECONDS = (10, 20, 30, 60)
 
 
 def _endpoint() -> str | None:
@@ -223,13 +230,31 @@ class GatewayVideo(BaseTool):
             "Accept": "text/event-stream",
         }
 
-        try:
-            response = requests.post(
-                endpoint, headers=headers, json=payload, stream=True, timeout=600
-            )
-        except requests.RequestException as exc:
-            return ToolResult(success=False, error=f"Gateway video request failed: {exc}")
+        response = None
+        settlement_retries = 0
+        for delay in (0, *_BALANCE_BACKOFF_SECONDS):
+            if delay:
+                time.sleep(delay)
+                settlement_retries += 1
+            try:
+                response = requests.post(
+                    endpoint, headers=headers, json=payload, stream=True, timeout=600
+                )
+            except requests.RequestException as exc:
+                return ToolResult(success=False, error=f"Gateway video request failed: {exc}")
+            if response.status_code != 402:
+                break
 
+        if response.status_code == 402:
+            body = response.text[:400]
+            return ToolResult(
+                success=False,
+                error=(
+                    "Gateway video still returns HTTP 402 after four settlement waits "
+                    "(10/20/30/60s, 120s total) — the balance is genuinely insufficient. "
+                    f"Funding is the principal's call. Gateway said: {body}"
+                ),
+            )
         if response.status_code != 200:
             body = response.text[:400]
             return ToolResult(
@@ -287,6 +312,9 @@ class GatewayVideo(BaseTool):
                 "aspect_ratio": payload["aspectRatio"],
                 "format": "mp4",
                 "warnings": event.get("warnings") or [],
+                # Honesty in-band: how many settlement waits this call
+                # absorbed before the gateway accepted it (0 = first try).
+                **({"settlement_retries": settlement_retries} if settlement_retries else {}),
             },
             artifacts=[str(output_path)],
             cost_usd=cost,

@@ -39,6 +39,10 @@ from tools.base_tool import (
 
 _PER_MINUTE_USD = 0.006  # openai whisper-1 published rate
 
+# HTTP 402 right after a paid call is usually billing-settlement lag,
+# not an empty balance. Wait it out on the principal-approved ladder.
+_BALANCE_BACKOFF_SECONDS = (10, 20, 30, 60)
+
 _MEDIA_TYPES = {
     ".mp3": "audio/mpeg",
     ".m4a": "audio/mp4",
@@ -145,24 +149,39 @@ class GatewayTranscribe(BaseTool):
             return ToolResult(success=False, error=f"No file at {source}")
         media_type = _MEDIA_TYPES.get(source.suffix.lower(), "audio/mpeg")
 
-        try:
-            response = requests.post(
-                endpoint,
-                headers={
-                    **_auth_headers(),
-                    "ai-gateway-protocol-version": "0.0.1",
-                    "ai-gateway-auth-method": "api-key",
-                    "ai-model-id": str(inputs.get("model", "openai/whisper-1")),
-                    "Content-Type": "application/json",
-                },
-                json={
-                    "audio": base64.b64encode(source.read_bytes()).decode(),
-                    "mediaType": media_type,
-                },
-                timeout=300,
+        response = None
+        for delay in (0, *_BALANCE_BACKOFF_SECONDS):
+            if delay:
+                time.sleep(delay)
+            try:
+                response = requests.post(
+                    endpoint,
+                    headers={
+                        **_auth_headers(),
+                        "ai-gateway-protocol-version": "0.0.1",
+                        "ai-gateway-auth-method": "api-key",
+                        "ai-model-id": str(inputs.get("model", "openai/whisper-1")),
+                        "Content-Type": "application/json",
+                    },
+                    json={
+                        "audio": base64.b64encode(source.read_bytes()).decode(),
+                        "mediaType": media_type,
+                    },
+                    timeout=300,
+                )
+            except requests.RequestException as exc:
+                return ToolResult(success=False, error=f"Gateway transcription request failed: {exc}")
+            if response.status_code != 402:
+                break
+        if response.status_code == 402:
+            return ToolResult(
+                success=False,
+                error=(
+                    "Gateway transcription still returns HTTP 402 after four settlement waits "
+                    "(10/20/30/60s) — the balance is genuinely insufficient; funding is the "
+                    f"principal's call. Gateway said: {response.text[:300]}"
+                ),
             )
-        except requests.RequestException as exc:
-            return ToolResult(success=False, error=f"Gateway transcription request failed: {exc}")
         if response.status_code != 200:
             return ToolResult(success=False, error=f"Gateway transcription HTTP {response.status_code}: {response.text[:300]}")
 
