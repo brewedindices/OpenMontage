@@ -173,13 +173,14 @@ class GatewayTranscribe(BaseTool):
                 return ToolResult(success=False, error=f"Gateway transcription request failed: {exc}")
             if response.status_code != 402:
                 break
+            if "minimum balance" in response.text.lower():
+                break  # stated policy floor — waiting cannot help
         if response.status_code == 402:
             return ToolResult(
                 success=False,
                 error=(
-                    "Gateway transcription still returns HTTP 402 after four settlement waits "
-                    "(10/20/30/60s) — the balance is genuinely insufficient; funding is the "
-                    f"principal's call. Gateway said: {response.text[:300]}"
+                    "Gateway transcription returned HTTP 402 — funding is the principal's call, "
+                    f"never a reason to substitute. Gateway said: {response.text[:300]}"
                 ),
             )
         if response.status_code != 200:

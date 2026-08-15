@@ -244,15 +244,24 @@ class GatewayVideo(BaseTool):
                 return ToolResult(success=False, error=f"Gateway video request failed: {exc}")
             if response.status_code != 402:
                 break
+            if "minimum balance" in response.text.lower():
+                # The gateway states a POLICY floor (measured verbatim:
+                # "Video generation requires a minimum balance of $10").
+                # No amount of waiting changes policy — stop immediately.
+                break
 
         if response.status_code == 402:
             body = response.text[:400]
+            waited = (
+                f"after {settlement_retries} settlement wait(s)"
+                if settlement_retries
+                else "immediately (stated policy, not settlement lag)"
+            )
             return ToolResult(
                 success=False,
                 error=(
-                    "Gateway video still returns HTTP 402 after four settlement waits "
-                    "(10/20/30/60s, 120s total) — the balance is genuinely insufficient. "
-                    f"Funding is the principal's call. Gateway said: {body}"
+                    f"Gateway video returned HTTP 402 {waited} — funding is the "
+                    f"principal's call, never a reason to substitute. Gateway said: {body}"
                 ),
             )
         if response.status_code != 200:
