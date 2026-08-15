@@ -59,6 +59,21 @@ def _endpoint() -> str | None:
     return None
 
 
+def _auth_headers() -> dict[str, str]:
+    """Authorization for gateway egress. Under GATEWAY_AUTH=firewall the
+    sandbox's egress firewall injects the credential for the gateway
+    domain — the key never exists inside the sandbox — so no header is
+    sent from here."""
+    if os.environ.get("GATEWAY_AUTH") == "firewall":
+        return {}
+    key = os.environ.get("OPENAI_API_KEY", "")
+    return {"Authorization": f"Bearer {key}"} if key else {}
+
+
+def _authed() -> bool:
+    return os.environ.get("GATEWAY_AUTH") == "firewall" or bool(os.environ.get("OPENAI_API_KEY"))
+
+
 class GatewayTranscribe(BaseTool):
     name = "gateway_transcribe"
     version = "0.1.0"
@@ -106,7 +121,7 @@ class GatewayTranscribe(BaseTool):
     user_visible_verification = ["Spot-check segment timings against the audio"]
 
     def get_status(self) -> ToolStatus:
-        if os.environ.get("OPENAI_API_KEY") and _endpoint():
+        if _authed() and _endpoint():
             return ToolStatus.AVAILABLE
         return ToolStatus.UNAVAILABLE
 
@@ -119,9 +134,11 @@ class GatewayTranscribe(BaseTool):
 
         start = time.time()
         endpoint = _endpoint()
-        api_key = os.environ.get("OPENAI_API_KEY")
-        if not endpoint or not api_key:
-            return ToolResult(success=False, error="gateway_transcribe needs OPENAI_API_KEY and a gateway endpoint.")
+        if not endpoint or not _authed():
+            return ToolResult(
+                success=False,
+                error="gateway_transcribe needs gateway auth (OPENAI_API_KEY or GATEWAY_AUTH=firewall) and a gateway endpoint.",
+            )
 
         source = Path(str(inputs.get("input_path", "")))
         if not source.is_file():
@@ -132,7 +149,7 @@ class GatewayTranscribe(BaseTool):
             response = requests.post(
                 endpoint,
                 headers={
-                    "Authorization": f"Bearer {api_key}",
+                    **_auth_headers(),
                     "ai-gateway-protocol-version": "0.0.1",
                     "ai-gateway-auth-method": "api-key",
                     "ai-model-id": str(inputs.get("model", "openai/whisper-1")),

@@ -73,6 +73,21 @@ def _pricing() -> dict[str, Any]:
         return {}
 
 
+def _auth_headers() -> dict[str, str]:
+    """Authorization for gateway egress. Under GATEWAY_AUTH=firewall the
+    sandbox's egress firewall injects the credential for the gateway
+    domain — the key never exists inside the sandbox — so no header is
+    sent from here."""
+    if os.environ.get("GATEWAY_AUTH") == "firewall":
+        return {}
+    key = os.environ.get("OPENAI_API_KEY", "")
+    return {"Authorization": f"Bearer {key}"} if key else {}
+
+
+def _authed() -> bool:
+    return os.environ.get("GATEWAY_AUTH") == "firewall" or bool(os.environ.get("OPENAI_API_KEY"))
+
+
 class GatewayVideo(BaseTool):
     name = "gateway_video"
     version = "0.1.0"
@@ -151,7 +166,7 @@ class GatewayVideo(BaseTool):
     user_visible_verification = ["Watch the clip to verify it matches the intended beat"]
 
     def get_status(self) -> ToolStatus:
-        if os.environ.get("OPENAI_API_KEY") and _endpoint() and _models():
+        if _authed() and _endpoint() and _models():
             return ToolStatus.AVAILABLE
         return ToolStatus.UNAVAILABLE
 
@@ -168,11 +183,10 @@ class GatewayVideo(BaseTool):
         import requests  # lazy: the registry must load without third-party deps
 
         endpoint = _endpoint()
-        api_key = os.environ.get("OPENAI_API_KEY")
-        if not endpoint or not api_key:
+        if not endpoint or not _authed():
             return ToolResult(
                 success=False,
-                error="gateway_video needs OPENAI_API_KEY and a gateway endpoint (AI_GATEWAY_VIDEO_URL or a gateway OPENAI_BASE_URL).",
+                error="gateway_video needs gateway auth (OPENAI_API_KEY or GATEWAY_AUTH=firewall) and a gateway endpoint (AI_GATEWAY_VIDEO_URL or a gateway OPENAI_BASE_URL).",
             )
 
         model = str(inputs.get("model", "")).strip()
@@ -200,7 +214,7 @@ class GatewayVideo(BaseTool):
             payload["seed"] = int(inputs["seed"])
 
         headers = {
-            "Authorization": f"Bearer {api_key}",
+            **_auth_headers(),
             "ai-gateway-protocol-version": "0.0.1",
             "ai-gateway-auth-method": "api-key",
             "ai-video-model-specification-version": "4",
