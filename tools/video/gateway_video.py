@@ -178,9 +178,22 @@ class GatewayVideo(BaseTool):
         return ToolStatus.UNAVAILABLE
 
     def estimate_cost(self, inputs: dict[str, Any]) -> float:
+        """The estimate the budget cap enforces — so it must match what the
+        gateway actually bills. Rates differ by resolution AND audio
+        (Veo-lite: $0.05/s at 720p with audio, $0.08/s at 1080p), so use
+        the rate row matching THIS request when the pricing env carries
+        the table; the flat per_second minimum is only the fallback."""
         seconds = int(inputs.get("duration", 4))
         entry = _pricing().get(str(inputs.get("model", "")), {})
-        per_second = entry.get("per_second", _FALLBACK_PER_SECOND)
+        resolution = str(inputs.get("resolution", "720p"))
+        audio = bool(inputs.get("generate_audio", True))
+        per_second = None
+        for row in entry.get("rates", []) or []:
+            if str(row.get("resolution")) == resolution and bool(row.get("audio")) == audio:
+                per_second = row.get("per_second")
+                break
+        if per_second is None:
+            per_second = entry.get("per_second", _FALLBACK_PER_SECOND)
         try:
             return float(per_second) * seconds
         except (TypeError, ValueError):
